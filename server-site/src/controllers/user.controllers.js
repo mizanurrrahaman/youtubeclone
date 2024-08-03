@@ -3,6 +3,9 @@ import bcrypt from 'bcryptjs';
 import { User } from '../models/user.model.js';
 import ApiError from '../utils/ApiError.js';
 import { Apirespose } from "../utils/Apirespons.js";
+import { cloudinaryDelete, cloudinaryUpload } from "../utils/cloudinary.js";
+import { publicidx } from "../utils/publicdex.js";
+import jwt from "jsonwebtoken";
 
 
 
@@ -23,7 +26,7 @@ connectDB();
 
 
 
-const generateAccessAndRefreshToken = async()=> {
+const generateAccessAndRefreshToken = async(user)=> {
     try{
        const accessToken = user.generateAccessToken()
        const refreshToken = user.generateRefreshToken()
@@ -37,39 +40,38 @@ const generateAccessAndRefreshToken = async()=> {
 }
 
  
-const register = async (req, res)=> {
-  const { username, fullName, email, password } = req.body;
 
-  if ([username, fullName, email, password].some(field => !field?.trim())) {
-    return res.status(400).json(new ApiError(400, 'All fields are required'));
-  }
+
+const register = async (req, res)=> {
 
   try {
+      const { username, fullName, email, password } = req.body;
+
+     if ([username, fullName, email, password].some((field) => field?.trim() === "")) {
+      //return res.status(400).json(new ApiError(400, 'All fields are required'));
+      return res.json(new ApiError())
+      }
+
     const existingUser = await User.findOne({
       $or: [{ username }, { email }]
     });
 
     if (existingUser) {
-      return res.status(400).json(new ApiError(400, 'Username or email already taken'));
+      return res.json({statusCode: 400, message: "user ache", 
+    
+
+      })
     }
+    const user = await User.create({username, fullName, email, password})
+    const createdUser = await User.findById(user._id).select("-password -refreshToken")
+     if(!createdUser){
+       return res.json(new ApiError(500))
+     }
+     res.json(new Apirespose(201, "user created", createdUser))
 
-    const hashedPassword = await bcrypt.hash(password, 10);
-
-    const newUser = new User({
-      username,
-      fullName,
-      email,
-      password: hashedPassword
-    });
-
-    await newUser.save();
-
-    const createdUser = await User.findById(newUser._id).select("-password -refreshToken");
-
-    res.status(201).json(new Apirespose(201, "User registered successfully", createdUser));
-  } catch (err) {
-    console.error('Registration error', err);
-    res.status(500).json(new ApiError(500, 'Internal server error'));
+  } catch (error) {
+   console.log(error.message);
+   return res.json(new ApiError (500, error.message))
   }
 };
 
@@ -83,9 +85,8 @@ const login  = async (req, res) => {
     if(!userFound) {
      return res.json(new ApiError(402, "user fot found"))
     }
-     console.log("a", userFound);
     const isPassword = await userFound.isPasswordCorrent(password)
-     console.log("b", isPassword)
+     
      if(!isPassword) {
         return res.json(new ApiError(402, "authtication failed"))
      }
@@ -102,10 +103,10 @@ const login  = async (req, res) => {
  }
 
 
-  } 
+   } 
 
   const logout = async (req, res )=> {
-     await User.findByIdAndUpdate(req.user?._id, {
+     const user =  await User.findByIdAndUpdate(req.user?._id, {
         $set: {refreshToken: null}
      }, {
         $new : true
@@ -114,88 +115,75 @@ const login  = async (req, res) => {
        secure: true,
        httpOnly: true
      }
+     console.log(user)
      res.clearCookie("accessToken".options).clearCookie("refreshToken", options).json(new Apirespose(200, "ok"))
   }
 
-export { register, login, logout }
+  const  uploadAvatarAndCover = async ( err, req, res) => {
+      try {
+        if(req.files) {
+           const {avatar, cover} = req.files
+          
+            if(avatar) {
+              const {path} = avatar[0]
+              const {secure_url} = await cloudinaryUpload(path, "user")
+              if(req.user.avatar) {
+                const publicId = publicidx(req.user.avatar)
+                await cloudinaryDelete(publicId)
+              }
+              req.user.avatar = secure_url
+              await req.user.save({ validateBeforeSave: false })
+              const user = await User.findById(req.user._id).select("-password")
+              console.log("u", user)
+              res.json(new Apirespose(200 , "avatar uploded", user))
+            }
+            if(cover) {
+              const {path} = cover[0]
+              const {secure_url} = await cloudinaryUpload(path, "user")
+              if(req.user.cover) {
+                  const publicId = publicidx(req.user.cover)
+                  await cloudinaryDelete(publicId)
+              }
 
-
-{/*
-
-  mongoose.connect('mongodb://localhost:27017/yourdatabase', {
-   useNewUrlParser: true,
-   useUnifiedTopology: true,
-   serverSelectionTimeoutMS: 30000,  // Increase the timeout to 30 seconds
-   socketTimeoutMS: 45000  // Increase the socket timeout to 45 seconds
- }).then(() => {
-   console.log('MongoDB connected');
- }).catch(err => {
-   console.error('Connection error', err);
- });
- 
-
-const register = async (req, res)=> {
-   const { username, fullName, email, password } = req.body;
-
-  if ([username, fullName, email, password].some(field => !field?.trim())) {
-    return res.status(400).json(new ApiError(400, 'All fields are required'));
+              req.user.cover = secure_url
+              await req.user.save()
+              const user = await User.findById(req.user._id).select("-password")
+              res.json(new Apirespose(200, "cover uploded", user))
+            } 
+        } else{
+           return res.json(new ApiError(402, "no file found"))
+        }
+      } catch( error) {
+         console.log("eee", error.message)
+      }
   }
 
-  try {
-    const existingUser = await User.findOne({
-      $or: [{ username }, { email }]
-    });
-
-    if (existingUser) {
-      return res.status(400).json(new ApiError(400, 'Username or email already taken'));
+  const generateAccessToken = async (req, res) => {
+    const token = req.cookies?.refreshToken || req.body.refreshToken
+    
+    if(!token) {
+        return res.json(new ApiError(401, "token is not here"))
     }
+    const decodedToken = jwt.verify(token, process.env.REFRESH_TOKIN_SECRECT)
+    if(!decodedToken) {
+      return res.json(new ApiError(401, "unauthorized access"))
+    }
+    const user = await User.findById(decodedToken._id)
 
-    const hashedPassword = await bcrypt.hash(password, 10);
+    if(!user) {
+      return res.json(new ApiError(401, "token is not here"))
+    }
+    const {accessToken, refreshToken} = await generateAccessAndRefreshToken(user)
 
-    const newUser = new User({
-      username,
-      fullName,
-      email,
-      password: hashedPassword
-    });
+    let options = {
+      secure: true,
+      httpOnly: true
+    }
+    res.cookie("accessToken", accessToken, options).cookie("refreshToken", refreshToken, options).json(new Apirespose(200, "token generate successfully", {user, accessToken}))
 
-    await newUser.save();
-
-    res.status(201).json({
-      statusCode: 201,
-      message: 'User registered successfully',
-    });
-  } catch (err) {
-    console.error('Registration error', err);
-    res.status(500).json(new ApiError(500, 'Internal server error'));
   }
-   
-    const user = await User.create({ username, fullName, email, password})
-    const createdUser = await User.findById(user._id).select("-password -refreshToken")
-    if(!createdUser) {
-
-    }
-    res.json(new Apirespose(201, "user created", createdUser))
-
-   
-};
 
 
-const register = async (req, res)=> {
-   const {username, fullName, email, password} = req.body
+export { register, login, logout, uploadAvatarAndCover, generateAccessToken }
 
-     if([username, fullName, email, password].some((field) => field?.trim() === " ")) {
-        res.json( new  ApiError(400, "all fields are required"))
-     } 
-     const existingUser = await User.findOne({
-        $or: [{username}, {email}]
-     })
-     if(!existingUser){
-        res.json({
-            statusCode:400,
-            message: "username ache",
-        })
-     }
-    //console.log(existingUser)
-}
-*/}
+

@@ -1,9 +1,12 @@
 import { app } from "./app.js";
 import { PORT } from "./constant.js";
-import { dbConnect } from "./db/index.js";
+//import connectDB, { dbConnect } from "./db/index.js";
+import connectDB from "./db/index.js";
+
+//dbConnect()
+connectDB()
 
 
-dbConnect()
 app.listen(PORT, ()=> {
     console.log("Server is running")
 })
